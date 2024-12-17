@@ -14,16 +14,17 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://host.docker.internal:11434")
 
-# DynamoDB setup for offset tracking and sessions (uses the existing chatbot-sessions table)
+# DynamoDB setup - use environment variable for region if set
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('chatbot-sessions')
-OFFSET_PK = 0  # Number 0 for global bot state (matches pk type "N")
+OFFSET_PK = 0
 OFFSET_SK = 'last_update_id'
 
-# S3 setup for archived conversations
+# S3 setup - bucket name can come from environment variable
+S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME', 'chatbot-conversations')
 s3_client = boto3.client('s3')
-ARCHIVE_BUCKET = 'chatbot-conversations'
-ARCHIVE_PREFIX = 'archives'  # S3 path: archives/{user_id}/{session_id}.json
+ARCHIVE_BUCKET = S3_BUCKET_NAME
+ARCHIVE_PREFIX = 'archives'
 
 
 def get_last_offset() -> int:
@@ -45,7 +46,7 @@ def save_offset(update_id: int):
                 'pk': OFFSET_PK,
                 'sk': OFFSET_SK,
                 'last_offset': update_id,
-                'last_updated_ts': int(time.time())  # Unix timestamp
+                'last_updated_ts': int(time.time())
             }
         )
         print(f"Saved offset: {update_id}")
@@ -102,7 +103,6 @@ def get_telegram_file(file_id: str) -> Optional[bytes]:
     if not TELEGRAM_TOKEN:
         return None
     try:
-        # Get file path
         resp = requests.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id}, timeout=10)
         data = resp.json()
         if not data.get("ok"):
@@ -110,8 +110,6 @@ def get_telegram_file(file_id: str) -> Optional[bytes]:
             return None
 
         file_path = data["result"]["file_path"]
-
-        # Download file
         download_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
         file_resp = requests.get(download_url, timeout=30)
         if file_resp.status_code == 200:
@@ -159,21 +157,19 @@ def create_session(user_id: int, model_name: str = "llama3") -> Dict[str, Any]:
         'session_id': session_id,
         'is_active': 1,
         'last_message_ts': now,
-        'conversation': [],  # List of {"role": "user"/"assistant", "content": str, "ts": int}
+        'conversation': [],
         'user_id': user_id,
-        's3_path': '',  # Will store path when session is archived to S3
+        's3_path': '',
     }
-    # Deactivate any existing active sessions
     existing_items = get_user_items(user_id)
     for it in existing_items:
-        if it.get('is_active', 0) == 1 and it['sk'] != sk:  # Avoid self-deactivation if somehow duplicate
+        if it.get('is_active', 0) == 1 and it['sk'] != sk:
             print(f"Deactivating existing session for user {user_id}: {it['sk']}")
             table.update_item(
                 Key={'pk': user_id, 'sk': it['sk']},
                 UpdateExpression='SET is_active = :val',
                 ExpressionAttributeValues={':val': 0}
             )
-    # Put new session
     table.put_item(Item=item)
     print(f"Created new session for user {user_id}: {sk}")
     return item
@@ -194,7 +190,6 @@ def append_to_conversation(session: Dict[str, Any], message_dict: Dict[str, Any]
     """Append a message to the session's conversation and update timestamp."""
     session['conversation'].append(message_dict)
     session['last_message_ts'] = int(time.time())
-    # Put the full updated session back
     table.put_item(Item=session)
     print(f"Appended message to session {session['sk']}, conversation length: {len(session['conversation'])}")
 
@@ -233,16 +228,12 @@ def get_archive_s3_key(user_id: int, session_id: str) -> str:
 
 
 def archive_session_to_s3(user_id: int, session: Dict[str, Any]) -> Optional[str]:
-    """
-    Archive a session from DynamoDB to S3.
-    Returns the S3 path on success, None on failure.
-    """
+    """Archive a session from DynamoDB to S3."""
     session_id = session.get('session_id', '')
     if not session_id:
         print(f"Session missing session_id: {session}")
         return None
 
-    # Prepare archive data
     archive_data = {
         'user_id': user_id,
         'session_id': session_id,
@@ -296,7 +287,6 @@ def list_user_archives(user_id: int) -> List[Dict[str, Any]]:
         for page in paginator.paginate(Bucket=ARCHIVE_BUCKET, Prefix=prefix):
             for obj in page.get('Contents', []):
                 key = obj['Key']
-                # Extract session_id from key: archives/{user_id}/{session_id}.json
                 session_id = key.split('/')[-1].replace('.json', '')
                 archives.append({
                     'session_id': session_id,
@@ -328,14 +318,9 @@ def get_archive_from_s3(user_id: int, session_id: str) -> Optional[Dict[str, Any
 
 
 def import_archive_to_s3(user_id: int, archive_data: Dict[str, Any]) -> Optional[str]:
-    """
-    Import an archive file to S3 for a user.
-    Generates a new session_id to avoid conflicts.
-    """
-    # Generate new session_id for imported archive
+    """Import an archive file to S3 for a user."""
     new_session_id = str(uuid.uuid4())
 
-    # Prepare imported archive data
     imported_data = {
         'user_id': user_id,
         'session_id': new_session_id,
@@ -404,7 +389,7 @@ Note: AI chat is not yet implemented."""
         return "help"
 
     if cmd == "/status":
-        resp_msg = "Ollama AI integration not yet implemented. Stay tuned!"
+        resp_msg = "🟢 Bot is running on AWS!\nOllama AI integration not yet implemented. Stay tuned!"
         send_message(chat_id, resp_msg)
         return "status"
 
@@ -438,7 +423,6 @@ Note: AI chat is not yet implemented."""
             sessions = [it for it in items if it['sk'].startswith('MODEL#')]
             if 0 <= idx < len(sessions):
                 target_sk = sessions[idx]['sk']
-                # Update all sessions: set target to active, others inactive
                 for session in sessions:
                     val = 1 if session['sk'] == target_sk else 0
                     table.update_item(
@@ -459,16 +443,14 @@ Note: AI chat is not yet implemented."""
 
     if cmd == "/history":
         session = get_current_session(user_id)
-        # Handle conversation - it might be a list or empty
         conversation = session.get('conversation', [])
         if isinstance(conversation, str):
-            # If stored as JSON string, parse it
             try:
                 conversation = json.loads(conversation)
             except:
                 conversation = []
 
-        conv = conversation[-5:] if conversation else []  # Last 5 messages
+        conv = conversation[-5:] if conversation else []
         if not conv:
             send_message(chat_id, "No messages in this session yet.")
             return "no_history"
@@ -498,7 +480,6 @@ Note: AI chat is not yet implemented."""
             send_message(chat_id, "No sessions to archive. Start chatting first!")
             return "no_sessions_to_archive"
 
-        # If no number provided, list sessions for archiving
         if not payload.strip():
             msg = "Sessions available to archive:\n"
             for i, session in enumerate(sessions):
@@ -512,20 +493,17 @@ Note: AI chat is not yet implemented."""
             send_message(chat_id, msg)
             return "list_for_archive"
 
-        # Archive specific session
         try:
             idx = int(payload.strip()) - 1
             if 0 <= idx < len(sessions):
                 session = sessions[idx]
                 session_id = session['session_id']
 
-                # Archive to S3
                 s3_key = archive_session_to_s3(user_id, session)
                 if not s3_key:
                     send_message(chat_id, "Failed to archive session to S3. Please try again.")
                     return "archive_s3_error"
 
-                # Delete from DynamoDB
                 if delete_session_from_dynamodb(user_id, session['sk']):
                     msg_count = len(session.get('conversation', []))
                     resp = f"Session archived successfully!\n"
@@ -556,7 +534,7 @@ Note: AI chat is not yet implemented."""
         for i, archive in enumerate(archives):
             sid = archive['session_id'][:8]
             size_kb = archive['size'] / 1024
-            last_mod = archive.get('last_modified', 'N/A')[:10]  # Just date part
+            last_mod = archive.get('last_modified', 'N/A')[:10]
             msg += f"{i+1}. Archive {sid} - {size_kb:.1f}KB - {last_mod}\n"
         msg += "\nUse /export <number> to download an archive."
         send_message(chat_id, msg)
@@ -579,13 +557,11 @@ Note: AI chat is not yet implemented."""
                 archive_info = archives[idx]
                 session_id = archive_info['session_id']
 
-                # Get archive data from S3
                 archive_data = get_archive_from_s3(user_id, session_id)
                 if not archive_data:
                     send_message(chat_id, "Failed to retrieve archive. Please try again.")
                     return "export_retrieve_error"
 
-                # Send as document
                 filename = f"archive_{session_id[:8]}_{archive_data.get('model_name', 'chat')}.json"
                 file_content = json.dumps(archive_data, indent=2, default=str).encode('utf-8')
 
@@ -606,7 +582,6 @@ Note: AI chat is not yet implemented."""
             send_message(chat_id, "Usage: /export <number> (e.g., /export 1)")
             return "invalid_export_format"
 
-    # Unknown command
     send_message(chat_id, "Unknown command. Send /help for available commands.")
     return "unknown"
 
@@ -619,30 +594,25 @@ def handle_document(document: Dict[str, Any], chat_id: int, user_id: int) -> str
 
     print(f"Received document: {file_name} ({mime_type}) from user {user_id}")
 
-    # Only accept JSON files for archive import
     if not (file_name.endswith('.json') or mime_type == 'application/json'):
         send_message(chat_id, "Please send a JSON file to import an archive.\nExport archives using /export to get the correct format.")
         return "invalid_file_type"
 
-    # Download file from Telegram
     file_content = get_telegram_file(file_id)
     if not file_content:
         send_message(chat_id, "Failed to download file. Please try again.")
         return "download_error"
 
-    # Parse JSON
     try:
         archive_data = json.loads(file_content.decode('utf-8'))
     except json.JSONDecodeError as e:
         send_message(chat_id, f"Invalid JSON file. Please send a valid archive export.\nError: {str(e)[:100]}")
         return "json_parse_error"
 
-    # Validate archive structure
     if 'conversation' not in archive_data:
         send_message(chat_id, "Invalid archive format. Missing 'conversation' field.\nUse /export to get a valid archive format.")
         return "invalid_archive_format"
 
-    # Import archive to S3
     new_session_id = import_archive_to_s3(user_id, archive_data)
     if not new_session_id:
         send_message(chat_id, "Failed to import archive. Please try again.")
@@ -663,7 +633,6 @@ def handle_document(document: Dict[str, Any], chat_id: int, user_id: int) -> str
 def handle_message(text: str, chat_id: int, user_id: int, update_id: int, document: Optional[Dict[str, Any]] = None) -> str:
     """Handle incoming messages: commands, chat, or documents."""
 
-    # Handle document uploads (archive imports)
     if document:
         return handle_document(document, chat_id, user_id)
 
@@ -671,7 +640,6 @@ def handle_message(text: str, chat_id: int, user_id: int, update_id: int, docume
         send_message(chat_id, "No text received.")
         return "no_text"
 
-    # Normalize and trim
     text = text.strip()
     if not text:
         send_message(chat_id, "No text received.")
@@ -680,21 +648,17 @@ def handle_message(text: str, chat_id: int, user_id: int, update_id: int, docume
     print(f"Processing update_id={update_id}, text='{text}' for user {user_id} in chat {chat_id}")
 
     if text.startswith('/'):
-        # Command
         parts = text.split(" ", 1)
         cmd = parts[0].split("@", 1)[0].lower()
         payload = parts[1] if len(parts) > 1 else ""
         return handle_command(cmd, payload, chat_id, user_id, update_id)
     else:
-        # Chat message: AI not implemented yet, but store in conversation for testing
         session = get_current_session(user_id)
         now = int(time.time())
 
-        # Store user message
         user_msg = {"role": "user", "content": text, "ts": now}
         append_to_conversation(session, user_msg)
 
-        # Send placeholder response and store it
         placeholder_response = "AI is not yet implemented. Your message has been saved to the conversation history for testing."
         ass_msg = {"role": "assistant", "content": placeholder_response, "ts": int(time.time())}
         append_to_conversation(session, ass_msg)
@@ -703,55 +667,116 @@ def handle_message(text: str, chat_id: int, user_id: int, update_id: int, docume
         return "ai_not_ready"
 
 
+def process_telegram_update(update: Dict[str, Any]) -> Dict[str, Any]:
+    """Process a single Telegram update (from webhook or polling)."""
+    update_id = update.get("update_id", 0)
+    message = update.get("message")
+    
+    if not message:
+        print(f"No message in update_id={update_id}, skipping")
+        return {"processed": False, "reason": "no_message"}
+    
+    chat_id = message.get("chat", {}).get("id")
+    from_user = message.get('from', {})
+    user_id = from_user.get('id', chat_id)
+    text = message.get("text", "")
+    document = message.get("document")
+    
+    if chat_id is None:
+        print(f"No chat_id in update_id={update_id}, skipping")
+        return {"processed": False, "reason": "no_chat_id"}
+    
+    handle_result = handle_message(text, chat_id, user_id, update_id, document)
+    
+    return {
+        "processed": True,
+        "update_id": update_id,
+        "handled": handle_result,
+        "text": text if text else "(document)",
+        "user_id": user_id
+    }
+
+
 def lambda_handler(event, context):
-    """Main Lambda handler. Process all pending messages from Telegram."""
+    """
+    Main Lambda handler.
+    Supports both:
+    1. Webhook mode (API Gateway triggers Lambda with Telegram update in body)
+    2. Polling mode (Manual invocation to poll Telegram getUpdates)
+    """
+    print(f"Event received: {json.dumps(event)[:500]}...")
+    
+    # Check if this is a webhook request from API Gateway
+    if 'body' in event:
+        # API Gateway webhook mode
+        try:
+            body = event.get('body', '{}')
+            if isinstance(body, str):
+                update = json.loads(body)
+            else:
+                update = body
+            
+            print(f"Webhook update received: {json.dumps(update)[:500]}...")
+            
+            result = process_telegram_update(update)
+            
+            # Always return 200 to Telegram to acknowledge receipt
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"ok": True, "result": result})
+            }
+        except json.JSONDecodeError as e:
+            print(f"JSON decode error: {e}")
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"ok": False, "error": "Invalid JSON"})
+            }
+        except Exception as e:
+            print(f"Webhook error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"ok": False, "error": str(e)})
+            }
+    
+    # Polling mode (manual invocation or scheduled)
     try:
         last_offset = get_last_offset()
-        print(f"Starting with last_offset: {last_offset}")
+        print(f"Polling mode - Starting with last_offset: {last_offset}")
 
-        # FIRST RUN INITIALIZATION: Process only the most recent message
         if last_offset == 0:
             print("First run detected - will process only the latest message")
             initial_poll = poll_messages(0)
             if initial_poll.get("ok"):
                 all_updates = initial_poll.get("result", [])
                 if all_updates:
-                    # Process only the LAST (most recent) message
                     latest_update = all_updates[-1]
                     latest_id = latest_update.get("update_id", 0)
 
-                    # Skip all older messages
                     if len(all_updates) > 1:
                         print(f"Skipping {len(all_updates) - 1} old messages")
 
-                    # Process the latest one
-                    message = latest_update.get("message")
-                    if message:
-                        chat_id = message.get("chat", {}).get("id")
-                        from_user = message.get('from', {})
-                        user_id = from_user.get('id', chat_id)  # Fallback to chat_id if no from
-                        text = message.get("text", "")
-                        document = message.get("document")  # Check for file upload
-                        if chat_id:
-                            handle_result = handle_message(text, chat_id, user_id, latest_id, document)
-                            save_offset(latest_id + 1)
-                            return {
-                                "statusCode": 200,
-                                "body": {
-                                    "first_run": True,
-                                    "processed": handle_result,
-                                    "text": text,
-                                    "user_id": user_id,
-                                    "skipped_count": len(all_updates) - 1
-                                }
-                            }
-
-                    # No message to process, just skip all
+                    result = process_telegram_update(latest_update)
                     save_offset(latest_id + 1)
                     return {
                         "statusCode": 200,
-                        "body": f"First run: Cleared {len(all_updates)} old messages"
+                        "body": {
+                            "mode": "polling",
+                            "first_run": True,
+                            "result": result,
+                            "skipped_count": len(all_updates) - 1
+                        }
                     }
+
+                save_offset(latest_id + 1 if all_updates else 1)
+                return {
+                    "statusCode": 200,
+                    "body": f"First run: Cleared {len(all_updates)} old messages"
+                }
 
         result = poll_messages(last_offset)
 
@@ -768,42 +793,22 @@ def lambda_handler(event, context):
 
         print(f"Received {len(updates)} updates")
 
-        # Process all NEW messages (those we haven't seen yet)
         processed = []
         max_update_id = last_offset
 
         for update in updates:
             update_id = update.get("update_id", 0)
 
-            # Skip if we've already processed this update
             if last_offset > 0 and update_id < last_offset:
                 print(f"Skipping already-processed update_id={update_id}")
                 max_update_id = max(max_update_id, update_id)
                 continue
 
-            message = update.get("message")
-            if not message:
-                print(f"No message in update_id={update_id}, skipping")
-                max_update_id = max(max_update_id, update_id)
-                continue
+            result = process_telegram_update(update)
+            if result.get("processed"):
+                processed.append(result)
+            max_update_id = max(max_update_id, update_id)
 
-            chat_id = message.get("chat", {}).get("id")
-            from_user = message.get('from', {})
-            user_id = from_user.get('id', chat_id)  # Use from.id primarily, fallback to chat_id for private chats
-            text = message.get("text", "")
-            document = message.get("document")  # Check for file upload
-
-            if chat_id is not None:
-                handle_result = handle_message(text, chat_id, user_id, update_id, document)
-                processed.append({
-                    "update_id": update_id,
-                    "handled": handle_result,
-                    "text": text if text else "(document)",
-                    "user_id": user_id
-                })
-                max_update_id = max(max_update_id, update_id)
-
-        # CRITICAL: Save offset to acknowledge we've processed these messages
         if max_update_id >= last_offset:
             new_offset = max_update_id + 1
             save_offset(new_offset)
@@ -812,6 +817,7 @@ def lambda_handler(event, context):
         return {
             "statusCode": 200,
             "body": {
+                "mode": "polling",
                 "processed_count": len(processed),
                 "messages": processed,
                 "last_offset": last_offset,
