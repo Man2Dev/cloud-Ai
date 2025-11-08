@@ -1,7 +1,7 @@
-# LocalStack AI Cloud Infrastructure Documentation
+# LocalStack AI Chatbot Infrastructure Documentation
 
-This project sets up a **local AWS-like environment** for AI chatbot development using LocalStack and Terraform.
-It provisions **S3 buckets** for chatbot training data and **DynamoDB tables** for user session management. All resources run locally and can be managed via AWS CLI and Terraform.
+This project sets up a **local AWS-like environment** for running an AI chatbot for users using LocalStack and Terraform.
+It provisions **S3 buckets** for storing chat data and **DynamoDB tables** for storing user sessions and conversation history. Users can select different models to interact with, and all conversation data is stored locally.
 
 ---
 
@@ -24,10 +24,10 @@ It provisions **S3 buckets** for chatbot training data and **DynamoDB tables** f
 
 ## Overview
 
-The project emulates AWS services locally to allow development and testing of an AI chatbot.
+The project emulates AWS services locally to allow users to interact with AI chatbots.
 
-* **S3 Bucket (`chatbot-training-data`)**: Stores training datasets, logs, and other chatbot files.
-* **DynamoDB Table (`chatbot-sessions`)**: Stores active chatbot sessions and conversation context.
+* **S3 Bucket (`chatbot-conversations`)**: Stores all chat logs, including which user talked to which model, the messages, and the model outputs.
+* **DynamoDB Table (`chatbot-sessions`)**: Stores active user sessions and context for ongoing conversations.
 
 Using LocalStack, all resources are created locally and accessible via AWS CLI or Terraform without requiring a real AWS account.
 
@@ -155,8 +155,8 @@ terraform apply -auto-approve
 
 After deployment, confirm resources exist:
 
-* List S3 buckets locally via AWS CLI
-* List DynamoDB tables locally via AWS CLI
+* List S3 buckets locally via AWS CLI to ensure conversation logs are stored
+* List DynamoDB tables locally via AWS CLI to ensure sessions are tracked
 * Check Terraform outputs for resource names
 
 ---
