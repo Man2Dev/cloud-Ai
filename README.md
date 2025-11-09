@@ -1,13 +1,15 @@
 # LocalStack AI Chatbot Infrastructure Documentation
 
 This project sets up a **local AWS-like environment** for running an AI chatbot for users using LocalStack and Terraform.
-It provisions **S3 buckets** for storing chat data and **DynamoDB tables** for storing user sessions and conversation history. Users can select different models to interact with, and all conversation data is stored locally.
+It provisions **S3 buckets** for storing chat history and **DynamoDB tables** for managing live sessions and metadata. Users can interact with multiple models through Telegram, with the backend powered by **Ollama**.
 
 ---
 
 ## Table of Contents
 
 * [Overview](#overview)
+* [Architecture Overview](#architecture-overview)
+* [DynamoDB and S3 Design](#dynamodb-and-s3-design)
 * [Dependencies](#dependencies)
 
   * [Windows (Scoop)](#windows-scoop)
@@ -24,12 +26,133 @@ It provisions **S3 buckets** for storing chat data and **DynamoDB tables** for s
 
 ## Overview
 
-The project emulates AWS services locally to allow users to interact with AI chatbots.
+The project emulates AWS services locally to allow users to interact with AI chatbots through Telegram.
+The backend communicates with the **Ollama API** to run multiple AI models and stores user interactions in DynamoDB and S3.
 
-* **S3 Bucket (`chatbot-conversations`)**: Stores all chat logs, including which user talked to which model, the messages, and the model outputs.
-* **DynamoDB Table (`chatbot-sessions`)**: Stores active user sessions and context for ongoing conversations.
+* **S3 Bucket (`chatbot-conversations`)**: Stores chat transcripts, logs, and archived sessions.
+* **DynamoDB Table (`chatbot-sessions`)**: Stores active user sessions, context, and model metadata.
 
 Using LocalStack, all resources are created locally and accessible via AWS CLI or Terraform without requiring a real AWS account.
+
+---
+
+## Architecture Overview
+
+```
+Telegram Bot → Backend Server → Ollama API → DynamoDB + S3 (via LocalStack)
+```
+
+**Flow:**
+
+1. A Telegram user sends a message to the bot.
+2. The backend receives it and determines which **Ollama model** to use (e.g., llama3, mistral, phi3).
+3. The message is sent to the **Ollama API** (`http://localhost:11434/api/generate`).
+4. The model response is stored temporarily in **DynamoDB**.
+5. When a session ends or grows large, it’s archived to **S3** for long-term storage.
+
+This setup allows multiple Telegram users to chat with different AI models simultaneously, maintaining their context across sessions.
+
+---
+
+## DynamoDB and S3 Design
+
+### Table Name
+
+`ChatbotSessions`
+
+### Purpose
+
+To store session state, model selection, and conversation context for each Telegram user interacting with Ollama models through the chatbot.
+
+---
+
+### Keys
+
+* **Partition Key (`PK`)**: `USER#<telegram_user_id>` → Groups all sessions by user.
+* **Sort Key (`SK`)**: `MODEL#<model_name>#SESSION#<session_id>` → Allows multiple models and sessions per user.
+
+### Attributes
+
+* `user_id` → Telegram user ID
+* `chat_id` → Telegram chat ID
+* `model_name` → Ollama model used for the session
+* `session_id` → Unique session identifier
+* `conversation` → List of recent messages (JSON array or serialized text)
+* `last_message_ts` → Timestamp of the last message
+* `status` → Active/closed session
+* `ollama_endpoint` → API endpoint for Ollama (e.g., `http://localhost:11434`)
+* `temperature` → Model temperature parameter
+* `max_tokens` → Maximum token limit for Ollama generation
+* `s3_path` → Path to archived session in S3
+
+---
+
+### UML Diagram Representation
+
+```text
++---------------------------------------------+
+|               ChatbotSessions               |
++---------------------------------------------+
+| PK: USER#<user_id>                          |
+| SK: MODEL#<model_name>#SESSION#<session_id> |
++---------------------------------------------+
+| user_id                                     |
+| chat_id                                     |
+| model_name                                  |
+| session_id                                  |
+| conversation                                |
+| last_message_ts                             |
+| status                                      |
+| ollama_endpoint                             |
+| temperature                                 |
+| max_tokens                                  |
+| s3_path                                     |
++---------------------------------------------+
+```
+
+---
+
+### S3 Bucket Design
+
+#### Bucket Name
+
+`chatbot-conversations`
+
+#### Purpose
+
+Stores archived session transcripts, logs, and outputs for each user and model.
+
+#### Structure
+
+```
+s3://chatbot-conversations/
+│
+├── <user_id>/
+│   ├── model_<model_name>/
+│   │   ├── session_<session_id>.json
+│   │   └── session_<session_id>.txt
+```
+
+Each file can include:
+
+* The full chat transcript.
+* The model used.
+* Ollama parameters (temperature, tokens, etc.).
+* User metadata and timestamps.
+
+---
+
+### Why Use DynamoDB + S3 Together?
+
+| Data Type                   | Stored In    | Reason                                  |
+| --------------------------- | ------------ | --------------------------------------- |
+| Current session context     | **DynamoDB** | Fast lookups, limited data size         |
+| Chat metadata               | **DynamoDB** | Indexed and queryable                   |
+| Archived full chat history  | **S3**       | Cheaper, no size limits                 |
+| Ollama logs and transcripts | **S3**       | Ideal for large, infrequent access data |
+
+**DynamoDB = Live data**
+**S3 = History and archives**
 
 ---
 
