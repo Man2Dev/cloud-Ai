@@ -6,7 +6,10 @@ Demonstrates S3 and DynamoDB operations for the chatbot system
 
 import boto3
 import json
+import uuid
+import time
 from datetime import datetime
+from decimal import Decimal
 from botocore.exceptions import ClientError
 
 # Configure boto3 to use LocalStack
@@ -66,9 +69,9 @@ def test_s3_operations():
     print("="*60)
     
     # Create sample conversation data
-    user_id = "12345678"
+    user_id = 12345678  # Numeric user ID
     model_name = "llama3"
-    session_id = "session_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_id = str(uuid.uuid4())
     
     conversation_data = {
         "user_id": user_id,
@@ -82,7 +85,7 @@ def test_s3_operations():
             {"role": "assistant", "content": "Python is a versatile programming language..."}
         ],
         "metadata": {
-            "temperature": 0.7,
+            "temperature": "0.7",  # Store as string in S3 JSON
             "max_tokens": 2000,
             "ollama_endpoint": "http://localhost:11434"
         }
@@ -143,12 +146,21 @@ def verify_dynamodb_table():
             print(f"  - Item Count: {table_desc['ItemCount']}")
             print(f"  - Keys:")
             for key in table_desc['KeySchema']:
-                print(f"    • {key['AttributeName']} ({key['KeyType']})")
+                attr_type = next(a['AttributeType'] for a in table_desc['AttributeDefinitions'] 
+                               if a['AttributeName'] == key['AttributeName'])
+                print(f"    • {key['AttributeName']} ({key['KeyType']}) - Type: {attr_type}")
             
             if 'GlobalSecondaryIndexes' in table_desc:
                 print(f"  - Global Secondary Indexes:")
                 for gsi in table_desc['GlobalSecondaryIndexes']:
                     print(f"    • {gsi['IndexName']}")
+                    for key in gsi['KeySchema']:
+                        print(f"      - {key['AttributeName']} ({key['KeyType']})")
+            
+            if 'TimeToLiveDescription' in table_desc:
+                ttl = table_desc['TimeToLiveDescription']
+                if ttl['TimeToLiveStatus'] == 'ENABLED':
+                    print(f"  - TTL: Enabled on '{ttl.get('AttributeName', 'N/A')}'")
             
             return True
         else:
@@ -166,37 +178,42 @@ def test_dynamodb_operations(s3_path=None):
     
     table = dynamodb_resource.Table(TABLE_NAME)
     
-    # Sample session data
-    user_id = "12345678"
+    # Sample session data - pk is now a Number (user_id)
+    user_id = 12345678  # Numeric user ID
     model_name = "llama3"
-    session_id = "session_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_id = str(uuid.uuid4())
+    current_timestamp = int(time.time())
     
     # 1. PUT ITEM - Create a new session
     print("\n1️⃣ Creating new session...")
     try:
         item = {
-            'pk': f'USER#{user_id}',
-            'sk': f'MODEL#{model_name}#SESSION#{session_id}',
-            'user_id': user_id,
-            'chat_id': '987654321',
+            'pk': user_id,  # Number type
+            'sk': session_id,  # UUID string
             'model_name': model_name,
             'session_id': session_id,
+            'user_id': str(user_id),
+            'chat_id': '987654321',
+            'is_active': 1,  # 1 = active, 0 = archived
             'conversation': json.dumps([
                 {"role": "user", "content": "Hello!"},
                 {"role": "assistant", "content": "Hi there!"}
             ]),
-            'last_message_ts': datetime.now().isoformat(),
-            'status': 'active',
+            'last_message_ts': current_timestamp,
+            'created_at': datetime.now().isoformat(),
             'ollama_endpoint': 'http://localhost:11434',
-            'temperature': '0.7',
-            'max_tokens': '2000',
-            's3_path': s3_path or ''
+            'temperature': Decimal('0.7'),  # Use Decimal for float values
+            'max_tokens': 2000,
+            's3_path': s3_path or '',
+            'ttl': current_timestamp + (30 * 24 * 60 * 60)  # Expire in 30 days
         }
         
         table.put_item(Item=item)
         print(f"✓ Created session: {session_id}")
-        print(f"  - PK: {item['pk']}")
-        print(f"  - SK: {item['sk']}")
+        print(f"  - PK (user_id): {item['pk']}")
+        print(f"  - SK (session_id): {item['sk']}")
+        print(f"  - Model: {item['model_name']}")
+        print(f"  - Active: {item['is_active']}")
     except ClientError as e:
         print(f"✗ Error creating session: {e}")
         return
@@ -206,15 +223,17 @@ def test_dynamodb_operations(s3_path=None):
     try:
         response = table.get_item(
             Key={
-                'pk': f'USER#{user_id}',
-                'sk': f'MODEL#{model_name}#SESSION#{session_id}'
+                'pk': user_id,
+                'sk': session_id
             }
         )
         if 'Item' in response:
             print(f"✓ Retrieved session successfully")
             print(f"  - Model: {response['Item']['model_name']}")
-            print(f"  - Status: {response['Item']['status']}")
-            print(f"  - Last message: {response['Item']['last_message_ts']}")
+            print(f"  - Active: {response['Item']['is_active']}")
+            print(f"  - Last message timestamp: {response['Item']['last_message_ts']}")
+            if 's3_path' in response['Item'] and response['Item']['s3_path']:
+                print(f"  - S3 Path: {response['Item']['s3_path']}")
         else:
             print("✗ Session not found")
     except ClientError as e:
@@ -226,56 +245,82 @@ def test_dynamodb_operations(s3_path=None):
         response = table.query(
             KeyConditionExpression='pk = :pk',
             ExpressionAttributeValues={
-                ':pk': f'USER#{user_id}'
+                ':pk': user_id
             }
         )
         print(f"✓ Found {response['Count']} session(s) for user {user_id}")
         for item in response['Items']:
-            print(f"  - {item['sk']} (Status: {item['status']})")
+            active_status = "Active" if item['is_active'] == 1 else "Archived"
+            print(f"  - Session: {item['sk'][:8]}... (Model: {item['model_name']}, Status: {active_status})")
     except ClientError as e:
         print(f"✗ Error querying sessions: {e}")
     
-    # 4. UPDATE ITEM - Update session status
+    # 4. UPDATE ITEM - Update session status to archived
     print("\n4️⃣ Updating session status...")
     try:
         table.update_item(
             Key={
-                'pk': f'USER#{user_id}',
-                'sk': f'MODEL#{model_name}#SESSION#{session_id}'
+                'pk': user_id,
+                'sk': session_id
             },
-            UpdateExpression='SET #status = :status, last_message_ts = :ts',
-            ExpressionAttributeNames={
-                '#status': 'status'
-            },
+            UpdateExpression='SET is_active = :is_active, last_message_ts = :ts',
             ExpressionAttributeValues={
-                ':status': 'archived',
-                ':ts': datetime.now().isoformat()
+                ':is_active': 0,  # Archive the session
+                ':ts': int(time.time())
             }
         )
-        print(f"✓ Updated session status to 'archived'")
+        print(f"✓ Updated session status to 'archived' (is_active = 0)")
     except ClientError as e:
         print(f"✗ Error updating session: {e}")
     
     # 5. QUERY GSI - Query by model name across all users
-    print("\n5️⃣ Querying Global Secondary Index (GSI)...")
+    print("\n5️⃣ Querying Global Secondary Index (model_index)...")
     try:
-        response = dynamodb_client.query(
-            TableName=TABLE_NAME,
+        response = table.query(
             IndexName='model_index',
             KeyConditionExpression='model_name = :model',
             ExpressionAttributeValues={
-                ':model': {'S': model_name}
+                ':model': model_name
             }
         )
         print(f"✓ Found {response['Count']} session(s) using model '{model_name}'")
+        for item in response['Items']:
+            print(f"  - User: {item['pk']}, Session: {item['sk'][:8]}...")
     except ClientError as e:
-        print(f"✗ Error querying GSI: {e}")
+        print(f"✗ Error querying GSI (model_index): {e}")
     
-    # 6. SCAN - Get all items (for demo purposes)
-    print("\n6️⃣ Scanning entire table...")
+    # 6. QUERY GSI - Query active sessions across all users
+    print("\n6️⃣ Querying Global Secondary Index (active_sessions_index)...")
+    try:
+        # Query for active sessions (is_active = 1)
+        response = table.query(
+            IndexName='active_sessions_index',
+            KeyConditionExpression='is_active = :is_active',
+            ExpressionAttributeValues={
+                ':is_active': 1
+            },
+            ScanIndexForward=False,  # Sort by last_message_ts descending
+            Limit=10
+        )
+        print(f"✓ Found {response['Count']} active session(s)")
+        for item in response['Items']:
+            # Convert Decimal to int for datetime
+            timestamp = datetime.fromtimestamp(int(item['last_message_ts'])).strftime('%Y-%m-%d %H:%M:%S')
+            print(f"  - User: {item['pk']}, Model: {item['model_name']}, Last message: {timestamp}")
+    except ClientError as e:
+        print(f"✗ Error querying GSI (active_sessions_index): {e}")
+    
+    # 7. SCAN - Get all items (for demo purposes)
+    print("\n7️⃣ Scanning entire table...")
     try:
         response = table.scan()
         print(f"✓ Total items in table: {response['Count']}")
+        
+        # Count active vs archived
+        active_count = sum(1 for item in response['Items'] if item.get('is_active', 0) == 1)
+        archived_count = response['Count'] - active_count
+        print(f"  - Active sessions: {active_count}")
+        print(f"  - Archived sessions: {archived_count}")
     except ClientError as e:
         print(f"✗ Error scanning table: {e}")
 
@@ -297,6 +342,8 @@ def cleanup_demo_data():
             for obj in response['Contents']:
                 s3_client.delete_object(Bucket=BUCKET_NAME, Key=obj['Key'])
                 print(f"✓ Deleted S3 object: {obj['Key']}")
+        else:
+            print("✓ No S3 objects to delete")
     except ClientError as e:
         print(f"✗ Error cleaning S3: {e}")
     
@@ -304,14 +351,17 @@ def cleanup_demo_data():
     try:
         table = dynamodb_resource.Table(TABLE_NAME)
         response = table.scan()
-        for item in response['Items']:
-            table.delete_item(
-                Key={
-                    'pk': item['pk'],
-                    'sk': item['sk']
-                }
-            )
-            print(f"✓ Deleted DynamoDB item: {item['pk']} / {item['sk']}")
+        if response['Items']:
+            for item in response['Items']:
+                table.delete_item(
+                    Key={
+                        'pk': item['pk'],
+                        'sk': item['sk']
+                    }
+                )
+                print(f"✓ Deleted DynamoDB item: PK={item['pk']}, SK={item['sk'][:8]}...")
+        else:
+            print("✓ No DynamoDB items to delete")
     except ClientError as e:
         print(f"✗ Error cleaning DynamoDB: {e}")
     
@@ -325,7 +375,8 @@ def main():
     print("\nThis script will demonstrate:")
     print("  • S3 bucket operations (upload/download)")
     print("  • DynamoDB CRUD operations")
-    print("  • Global Secondary Index queries")
+    print("  • Global Secondary Index queries (model_index, active_sessions_index)")
+    print("  • TTL configuration")
     print("\nMake sure LocalStack is running: docker compose up -d")
     print("="*60)
     
