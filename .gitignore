@@ -22,3 +22,6 @@ Thumbs.db
 
 # python
 package/
+
+# lambda
+lambda_function.zip
