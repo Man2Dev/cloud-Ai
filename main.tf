@@ -81,3 +81,77 @@ resource "aws_dynamodb_table" "chatbot_sessions" {
     Env     = "local"
   }
 }
+# -----------------------
+# Lambda packaging + function
+# -----------------------
+
+variable "telegram_token" {
+  description = "Telegram bot token passed as environment variable to Lambda"
+  type        = string
+  default     = ""  # Set via CLI or tfvars for testing
+  sensitive   = true
+}
+
+# Use pre-built zip (from build_lambda.sh) instead of source_file
+data "archive_file" "lambda_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/package"  # Assumes build_lambda.sh ran
+  output_path = "${path.module}/lambda_function.zip"
+  excludes    = []  # Zip everything in package/
+}
+
+resource "aws_iam_role" "lambda_exec" {
+  name = "lambda_exec_role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "lambda_policy" {
+  name = "lambda_policy"
+  role = aws_iam_role.lambda_exec.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:*",
+          "s3:*"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "telegram_bot" {
+  function_name    = "telegram-bot"
+  filename         = data.archive_file.lambda_zip.output_path
+  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  handler          = "handler.lambda_handler"  # Expects handler.py in zip root
+  runtime          = "python3.9"
+  role             = aws_iam_role.lambda_exec.arn
+
+  environment {
+    variables = {
+      TELEGRAM_TOKEN = var.telegram_token
+    }
+  }
+}
