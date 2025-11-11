@@ -4,6 +4,7 @@
 .terraform/
 .terraform.lock.hcl
 terraform.tfvars
+output.json
 
 # LocalStack data folder
 localstack-data/
