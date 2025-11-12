@@ -110,20 +110,44 @@ def lambda_handler(event, context):
         last_offset = get_last_offset()
         print(f"Starting with last_offset: {last_offset}")
         
-        # FIRST RUN INITIALIZATION: Clear any stale messages
+        # FIRST RUN INITIALIZATION: Process only the most recent message
         if last_offset == 0:
-            print("First run detected - checking for stale messages to skip")
+            print("First run detected - will process only the latest message")
             initial_poll = poll_messages(0)
             if initial_poll.get("ok"):
-                stale_updates = initial_poll.get("result", [])
-                if stale_updates:
-                    # Find the highest update_id to skip all old messages
-                    highest_id = max(u.get("update_id", 0) for u in stale_updates)
-                    print(f"Found {len(stale_updates)} stale messages, skipping to update_id={highest_id + 1}")
-                    save_offset(highest_id + 1)
+                all_updates = initial_poll.get("result", [])
+                if all_updates:
+                    # Process only the LAST (most recent) message
+                    latest_update = all_updates[-1]
+                    latest_id = latest_update.get("update_id", 0)
+                    
+                    # Skip all older messages
+                    if len(all_updates) > 1:
+                        print(f"Skipping {len(all_updates) - 1} old messages")
+                    
+                    # Process the latest one
+                    message = latest_update.get("message")
+                    if message:
+                        chat_id = message.get("chat", {}).get("id")
+                        text = message.get("text", "")
+                        if chat_id:
+                            handle_result = handle_message(text, chat_id, latest_id)
+                            save_offset(latest_id + 1)
+                            return {
+                                "statusCode": 200,
+                                "body": {
+                                    "first_run": True,
+                                    "processed": handle_result,
+                                    "text": text,
+                                    "skipped_count": len(all_updates) - 1
+                                }
+                            }
+                    
+                    # No message to process, just skip all
+                    save_offset(latest_id + 1)
                     return {
                         "statusCode": 200,
-                        "body": f"First run: Cleared {len(stale_updates)} stale messages"
+                        "body": f"First run: Cleared {len(all_updates)} old messages"
                     }
         
         result = poll_messages(last_offset)
