@@ -20,8 +20,8 @@ def get_last_offset() -> int:
         response = table.get_item(Key={'pk': OFFSET_PK, 'sk': OFFSET_SK})
         if 'Item' in response:
             return int(response['Item'].get('last_offset', 0))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Error getting offset: {e}")
     return 0
 
 def save_offset(update_id: int):
@@ -35,8 +35,9 @@ def save_offset(update_id: int):
                 'last_updated_ts': int(time.time())  # Unix timestamp
             }
         )
-    except Exception:
-        pass  # Fail silently for demo
+        print(f"Saved offset: {update_id}")
+    except Exception as e:
+        print(f"Error saving offset: {e}")
 
 def poll_messages(offset: int = 0) -> Dict[str, Any]:
     """Poll Telegram getUpdates with offset to avoid reprocessing."""
@@ -46,7 +47,9 @@ def poll_messages(offset: int = 0) -> Dict[str, Any]:
         params = {"limit": 5, "timeout": 0}
         if offset > 0:
             params["offset"] = offset
-        resp = requests.get(f"{TELEGRAM_API}/getUpdates", params=params)
+        
+        print(f"Polling with offset: {offset}")
+        resp = requests.get(f"{TELEGRAM_API}/getUpdates", params=params, timeout=10)
         return resp.json()
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -62,7 +65,7 @@ def send_message(chat_id: int, text: str) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
 
-def handle_message(text: str, chat_id: int) -> str:
+def handle_message(text: str, chat_id: int, update_id: int) -> str:
     """Handle simple commands: /hello, /help, /echo"""
     if not text:
         send_message(chat_id, "No text received.")
@@ -77,6 +80,8 @@ def handle_message(text: str, chat_id: int) -> str:
     # split into command and payload; support commands with @botusername
     parts = text.split(" ", 1)
     cmd = parts[0].split("@", 1)[0].lower()
+
+    print(f"Processing update_id={update_id}, command={cmd}")
 
     if cmd == "/hello":
         resp = "Hello! 👋 I'm your demo bot."
@@ -103,30 +108,65 @@ def lambda_handler(event, context):
     """Main Lambda handler. Process all pending messages from Telegram."""
     try:
         last_offset = get_last_offset()
+        print(f"Starting with last_offset: {last_offset}")
+        
+        # FIRST RUN INITIALIZATION: Clear any stale messages
+        if last_offset == 0:
+            print("First run detected - checking for stale messages to skip")
+            initial_poll = poll_messages(0)
+            if initial_poll.get("ok"):
+                stale_updates = initial_poll.get("result", [])
+                if stale_updates:
+                    # Find the highest update_id to skip all old messages
+                    highest_id = max(u.get("update_id", 0) for u in stale_updates)
+                    print(f"Found {len(stale_updates)} stale messages, skipping to update_id={highest_id + 1}")
+                    save_offset(highest_id + 1)
+                    return {
+                        "statusCode": 200,
+                        "body": f"First run: Cleared {len(stale_updates)} stale messages"
+                    }
+        
         result = poll_messages(last_offset)
         
         if not result.get("ok"):
-            return {"statusCode": 400, "body": f"Telegram API error: {result.get('error', result)}"}
+            error_msg = f"Telegram API error: {result.get('error', result)}"
+            print(error_msg)
+            return {"statusCode": 400, "body": error_msg}
         
         updates = result.get("result", [])
         
         if not updates:
+            print("No new messages")
             return {"statusCode": 200, "body": "No messages"}
 
-        # Process all messages (not just the last one)
+        print(f"Received {len(updates)} updates")
+
+        # Process all NEW messages (those we haven't seen yet)
         processed = []
-        max_update_id = last_offset  # Track the highest ID to save
+        max_update_id = last_offset
+        
         for update in updates:
+            update_id = update.get("update_id", 0)
+            
+            # Skip if we've already processed this update
+            # When last_offset > 0, skip anything with update_id < last_offset
+            # When last_offset == 0 (first run), process everything but mark as seen
+            if last_offset > 0 and update_id < last_offset:
+                print(f"Skipping already-processed update_id={update_id}")
+                max_update_id = max(max_update_id, update_id)
+                continue
+            
             message = update.get("message")
             if not message:
+                print(f"No message in update_id={update_id}, skipping")
+                max_update_id = max(max_update_id, update_id)
                 continue
             
             chat_id = message.get("chat", {}).get("id")
             text = message.get("text", "")
-            update_id = update.get("update_id", 0)
             
             if chat_id is not None:
-                handle_result = handle_message(text, chat_id)
+                handle_result = handle_message(text, chat_id, update_id)
                 processed.append({
                     "update_id": update_id,
                     "handled": handle_result,
@@ -134,10 +174,23 @@ def lambda_handler(event, context):
                 })
                 max_update_id = max(max_update_id, update_id)
         
-        # Acknowledge by saving the next offset (last ID + 1)
-        if max_update_id > last_offset:
-            save_offset(max_update_id + 1)
+        # CRITICAL: Save offset to acknowledge we've processed these messages
+        # This tells Telegram not to send them again
+        if max_update_id >= last_offset:
+            new_offset = max_update_id + 1
+            save_offset(new_offset)
+            print(f"Acknowledged up to update_id={max_update_id}, next offset={new_offset}")
         
-        return {"statusCode": 200, "body": {"processed_count": len(processed), "messages": processed}}
+        return {
+            "statusCode": 200, 
+            "body": {
+                "processed_count": len(processed), 
+                "messages": processed,
+                "last_offset": last_offset,
+                "new_offset": max_update_id + 1
+            }
+        }
     except Exception as e:
-        return {"statusCode": 500, "body": f"Error: {str(e)}"}
+        error_msg = f"Error: {str(e)}"
+        print(error_msg)
+        return {"statusCode": 500, "body": error_msg}
