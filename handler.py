@@ -11,7 +11,7 @@ from boto3.dynamodb.conditions import Key
 load_dotenv()
 
 # -------------------- Configuration --------------------
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8020228066:AAHbaJINkzWO5at_6azHEyN9lfxAJm_LvtE")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 DYNAMODB_ENDPOINT = os.getenv("DYNAMODB_ENDPOINT", "http://localhost:4566")
