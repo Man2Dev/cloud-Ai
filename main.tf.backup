@@ -190,11 +190,13 @@ resource "aws_lambda_function" "telegram_bot" {
   handler          = "handler.lambda_handler"  # Expects handler.py in zip root
   runtime          = "python3.9"
   role             = aws_iam_role.lambda_exec.arn
-  timeout          = 30  # Increased timeout to 30 seconds
 
   environment {
     variables = {
       TELEGRAM_TOKEN = var.telegram_token
+      # Use LocalStack's internal endpoint for Lambda containers
+      DYNAMODB_ENDPOINT = "http://localhost:4566"
+      AWS_ENDPOINT_URL = "http://localhost:4566"
     }
   }
 }
