@@ -1,0 +1,16 @@
+{
+    "Item": {
+        "sk": {
+            "S": "last_update_id"
+        },
+        "last_offset": {
+            "N": "891673858"
+        },
+        "last_updated_ts": {
+            "N": "1763228877"
+        },
+        "pk": {
+            "N": "0"
+        }
+    }
+}
