@@ -3,6 +3,7 @@
 *.tfstate.*
 .terraform/
 .terraform.lock.hcl
+.env.tfvars
 terraform.tfvars
 output.json
 
