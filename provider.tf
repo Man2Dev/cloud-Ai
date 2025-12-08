@@ -22,9 +22,11 @@ provider "aws" {
   skip_requesting_account_id  = true
 
   endpoints {
-    s3       = "http://localhost:4566"
-    dynamodb = "http://localhost:4566"
-    lambda   = "http://localhost:4566"
-    iam      = "http://localhost:4566"
+    s3          = "http://localhost:4566"
+    dynamodb    = "http://localhost:4566"
+    lambda      = "http://localhost:4566"
+    iam         = "http://localhost:4566"
+    apigateway  = "http://localhost:4566"  # ← ADD THIS
+    sts         = "http://localhost:4566"  # ← ADD THIS (required for IAM roles)
   }
 }

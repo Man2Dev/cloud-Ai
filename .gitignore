@@ -4,7 +4,6 @@
 .terraform/
 .terraform.lock.hcl
 terraform.tfvars
-output.json
 
 # LocalStack data folder
 localstack-data/
@@ -21,8 +20,3 @@ localstack-data/
 # Windows files
 Thumbs.db
 
-# python
-package/
-
-# lambda
-lambda_function.zip

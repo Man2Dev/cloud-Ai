@@ -198,3 +198,20 @@ resource "aws_lambda_function" "telegram_bot" {
     }
   }
 }
+
+# -----------------------
+# Create Lambda Function URL (via local-exec)
+# -----------------------
+resource "null_resource" "create_function_url" {
+  depends_on = [aws_lambda_function.telegram_bot]
+
+  provisioner "local-exec" {
+    command = <<EOT
+      echo "Creating Function URL for telegram-bot..."
+      awslocal lambda create-function-url-config \
+        --function-name telegram-bot \
+        --auth-type NONE
+      echo "✅ Function URL created."
+    EOT
+  }
+}
