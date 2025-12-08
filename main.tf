@@ -12,6 +12,20 @@ resource "aws_s3_bucket" "chatbot_conversations" {
 }
 
 ##########################
+# S3: chatbot-user-files
+##########################
+resource "aws_s3_bucket" "chatbot_user_files" {
+  bucket = "chatbot-user-files"
+
+  tags = {
+    Project = "AI-Chatbot"
+    Purpose = "Store user-uploaded files"
+    Env     = "local"
+  }
+}
+
+
+##########################
 # DynamoDB: chatbot-sessions
 ##########################
 resource "aws_dynamodb_table" "chatbot_sessions" {
@@ -149,8 +163,9 @@ resource "aws_lambda_function" "telegram_bot" {
   role             = aws_iam_role.lambda_exec.arn
 
   environment {
-    variables = {
-      TELEGRAM_TOKEN = var.telegram_token
-    }
+  variables = {
+    TELEGRAM_TOKEN     = var.telegram_token
+    USER_FILES_BUCKET  = aws_s3_bucket.chatbot_user_files.bucket
   }
+}
 }
