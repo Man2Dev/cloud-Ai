@@ -305,6 +305,12 @@ Replace `YOUR_TELEGRAM_BOT_TOKEN` with your actual Telegram bot token from BotFa
 awslocal lambda invoke --function-name telegram-bot output.json && cat output.json
 ```
 
+**UNIX command to loop invoke command**
+```bash
+while true; do awslocal lambda invoke --function-name telegram-bot out.json >/dev/null 2>&1; sleep 1; done
+```
+
+
 This invokes the Lambda function, which polls Telegram for new messages once. Repeat the command to process more messages.
 
 - - -
