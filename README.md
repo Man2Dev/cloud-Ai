@@ -13,6 +13,7 @@ backend powered by **Ollama**.
 * [Architecture Overview](#architecture-overview)
 * [DynamoDB and S3 Design](#dynamodb-and-s3-design)
 * [Dependencies](#dependencies)
+
   * [Windows (Scoop)](#windows-scoop)
   * [Fedora Linux (dnf)](#fedora-linux-dnf)
   * [macOS (Homebrew)](#macos-homebrew)
@@ -152,7 +153,6 @@ Each file can include:
 
 **DynamoDB = Live data** **S3 = History and archives**
 
-- - -
 ## Dependencies
 
 ```bash
@@ -189,11 +189,13 @@ Enable and start Docker service:
 ```bash
 sudo systemctl enable --now docker
 ```
+
 ### macOS (Homebrew)
 
 Required tools:
 
 * Terraform
+* AWS CLI
 * Docker
 * Docker Compose
 
