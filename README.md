@@ -18,6 +18,8 @@ This project sets up a **local AWS-like environment** for running an AI chatbot 
   * [Fedora Linux (dnf)](#fedora-linux-dnf)
   * [macOS (Homebrew)](#macos-homebrew)
 * [Setup Instructions](#setup-instructions)
+* [AWS CLI Tools](#aws-cli-tools)
+* [Running the Bot](#running-the-bot)
 * [Commands](#commands)
 * [Project Structure](#project-structure)
 * [Verification](#verification)
@@ -202,6 +204,7 @@ Each archive JSON contains:
 - - -
 ## Dependencies
 
+### Python Dependencies
 Install the AWS CLI local wrapper:
 ```bash
 pip install awscli-local
@@ -277,7 +280,34 @@ Default region name: us-east-1
 Default output format: json
 ```
 
-4. **Prepare Lambda package** (required for Terraform to zip function):
+4. **Configure Telegram Token** (choose one method):
+
+**Option A: Using terraform.tfvars (Recommended)**
+```bash
+# Copy the example file
+cp terraform.tfvars.example terraform.tfvars
+
+# Edit and add your token
+nano terraform.tfvars  # or use your preferred editor
+```
+
+Set your token in `terraform.tfvars`:
+```hcl
+telegram_token = "YOUR_TOKEN"
+```
+
+**Option B: Using command line variable**
+```bash
+terraform apply -var="telegram_token=YOUR_TOKEN"
+```
+
+**Option C: Using environment variable**
+```bash
+export TF_VAR_telegram_token="YOUR_TOKEN"
+terraform apply
+```
+
+5. **Prepare Lambda package** (required for Terraform to zip function):
 ```bash
 # Clean up any existing package
 rm -rf package/ lambda_function.zip
@@ -292,31 +322,57 @@ pip install -r requirements.txt -t ./package
 cp handler.py package/
 ```
 
-5. **Initialize and apply Terraform** (pass your Telegram token):
+6. **Initialize and apply Terraform**:
 ```bash
 terraform init
-terraform apply -auto-approve -var="telegram_token=YOUR_TELEGRAM_BOT_TOKEN"
+terraform apply -auto-approve
 ```
 
-Replace `YOUR_TELEGRAM_BOT_TOKEN` with your actual Telegram bot token from BotFather.
-
-6. **Test the Lambda function**:
+7. **Test the Lambda function**:
 ```bash
 awslocal lambda invoke --function-name telegram-bot output.json && cat output.json
 ```
 
-**UNIX command to loop invoke command**
+- - -
+## AWS CLI Tools
+
+This project uses LocalStack to emulate AWS services locally. There are two ways to interact with LocalStack:
+
+### awslocal (Recommended)
+
+`awslocal` is a wrapper around the AWS CLI that automatically configures the endpoint URL for LocalStack. It's simpler and less error-prone.
+
+**Installation:**
 ```bash
-while true; do awslocal lambda invoke --function-name telegram-bot out.json >/dev/null 2>&1; sleep 1; done
+pip install awscli-local
 ```
 
+**Usage:**
+```bash
+# List S3 buckets
+awslocal s3 ls
 
-This invokes the Lambda function, which polls Telegram for new messages once. Repeat the command to process more messages.
+# List DynamoDB tables
+awslocal dynamodb list-tables
 
-- - -
-## Commands
+# Invoke Lambda function
+awslocal lambda invoke --function-name telegram-bot output.json
 
-**Verify resources:**
+# Describe DynamoDB table
+awslocal dynamodb describe-table --table-name chatbot-sessions
+
+# List objects in S3 bucket
+awslocal s3 ls s3://chatbot-conversations/
+
+# Get Lambda function info
+awslocal lambda get-function --function-name telegram-bot
+```
+
+### aws (Standard AWS CLI)
+
+The standard AWS CLI requires manually specifying the LocalStack endpoint URL for every command.
+
+**Usage:**
 ```bash
 # List S3 buckets
 aws s3 ls --endpoint-url http://localhost:4566
@@ -324,11 +380,94 @@ aws s3 ls --endpoint-url http://localhost:4566
 # List DynamoDB tables
 aws dynamodb list-tables --endpoint-url http://localhost:4566
 
+# Invoke Lambda function
+aws lambda invoke --function-name telegram-bot output.json --endpoint-url http://localhost:4566
+
+# Describe DynamoDB table
+aws dynamodb describe-table --table-name chatbot-sessions --endpoint-url http://localhost:4566
+
+# List objects in S3 bucket
+aws s3 ls s3://chatbot-conversations/ --endpoint-url http://localhost:4566
+
+# Get Lambda function info
+aws lambda get-function --function-name telegram-bot --endpoint-url http://localhost:4566
+```
+
+### Comparison
+
+| Feature | awslocal | aws |
+|---------|----------|-----|
+| Endpoint configuration | Automatic | Manual (`--endpoint-url`) |
+| Command length | Shorter | Longer |
+| LocalStack-specific | Yes | No (works with real AWS too) |
+| Installation | `pip install awscli-local` | Included with AWS CLI |
+
+**Recommendation:** Use `awslocal` for LocalStack development. Use `aws` with `--endpoint-url` if you need to switch between LocalStack and real AWS frequently.
+
+- - -
+## Running the Bot
+
+The Lambda function needs to be invoked repeatedly to poll for new Telegram messages. LocalStack doesn't support event-driven triggers like real AWS, so we use manual polling.
+
+### Single Invocation
+```bash
+awslocal lambda invoke --function-name telegram-bot output.json && cat output.json
+```
+
+### Continuous Polling (Recommended for Development)
+
+Run this loop in the Bash shell to continuously poll for messages:
+
+```bash
+while true; do awslocal lambda invoke --function-name telegram-bot out.json >/dev/null 2>&1; sleep 1; done
+```
+
+**What this does:**
+- Invokes the Lambda function every second
+- Suppresses output to keep terminal clean
+- Runs until you press `Ctrl+C` to stop
+
+**With visible output:**
+```bash
+while true; do awslocal lambda invoke --function-name telegram-bot out.json && cat out.json; sleep 1; done
+```
+
+**With timestamps:**
+```bash
+while true; do echo "$(date '+%H:%M:%S') - Polling..."; awslocal lambda invoke --function-name telegram-bot out.json >/dev/null 2>&1; sleep 1; done
+```
+
+### Background Polling
+
+Run polling in the background:
+```bash
+# Start in background
+nohup bash -c 'while true; do awslocal lambda invoke --function-name telegram-bot out.json >/dev/null 2>&1; sleep 1; done' &
+
+# Find and stop the background process
+ps aux | grep "lambda invoke"
+kill <PID>
+```
+
+- - -
+## Commands
+
+**Verify resources:**
+```bash
+# List S3 buckets
+awslocal s3 ls
+
+# List DynamoDB tables
+awslocal dynamodb list-tables
+
 # List archived sessions for a user (replace USER_ID)
-aws s3 ls s3://chatbot-conversations/archives/USER_ID/ --endpoint-url http://localhost:4566
+awslocal s3 ls s3://chatbot-conversations/archives/USER_ID/
 
 # View Lambda logs
 awslocal logs tail /aws/lambda/telegram-bot --follow
+
+# Scan DynamoDB table
+awslocal dynamodb scan --table-name chatbot-sessions
 ```
 
 **Cleanup:**
@@ -341,16 +480,23 @@ rm -rf package/ lambda_function.zip
 - - -
 ## Project Structure
 
-* `docker-compose.yml` — LocalStack services configuration
-* `provider.tf` — Terraform AWS provider configuration (LocalStack endpoints)
-* `main.tf` — Terraform resources (S3, DynamoDB, IAM, Lambda)
-* `outputs.tf` — Terraform outputs (resource names)
-* `requirements.txt` — Python dependencies (requests, boto3)
-* `handler.py` — Lambda handler (Telegram polling, session management, archive commands)
-* `scripts/demo.py` — Demo script for testing S3 and DynamoDB operations
-* `scripts/verify.sh` — Bash script to verify LocalStack health and resources
-* `.gitignore` — Git ignore file
-* `README.md` — This documentation
+```
+.
+├── docker-compose.yml          # LocalStack services configuration
+├── provider.tf                 # Terraform AWS provider (LocalStack endpoints)
+├── main.tf                     # Terraform resources (S3, DynamoDB, IAM, Lambda)
+├── outputs.tf                  # Terraform outputs (resource names)
+├── terraform.tfvars.example    # Example variables file (copy to terraform.tfvars)
+├── terraform.tfvars            # Your local variables (gitignored)
+├── requirements.txt            # Python dependencies (requests, boto3)
+├── handler.py                  # Lambda handler (Telegram polling, sessions, archives)
+├── scripts/
+│   ├── demo.py                 # Demo script for testing S3 and DynamoDB
+│   └── verify.sh               # Bash script to verify LocalStack health
+├── .gitignore                  # Git ignore file
+├── LICENSE                     # GPL v3 License
+└── README.md                   # This documentation
+```
 
 - - -
 ## Verification
@@ -359,15 +505,16 @@ After deployment, verify resources exist:
 
 ```bash
 # Check S3 bucket
-aws s3 ls --endpoint-url http://localhost:4566
+awslocal s3 ls
 
 # Check DynamoDB table
-aws dynamodb describe-table --table-name chatbot-sessions \
-  --endpoint-url http://localhost:4566 | jq '.Table.TableStatus'
+awslocal dynamodb describe-table --table-name chatbot-sessions | jq '.Table.TableStatus'
 
 # Check Lambda function
-aws lambda get-function --function-name telegram-bot \
-  --endpoint-url http://localhost:4566 | jq '.Configuration.FunctionName'
+awslocal lambda get-function --function-name telegram-bot | jq '.Configuration.FunctionName'
+
+# Check Lambda environment variables (verify token is set)
+awslocal lambda get-function-configuration --function-name telegram-bot | jq '.Environment.Variables'
 ```
 
 Or use the provided script:
@@ -380,13 +527,14 @@ bash scripts/verify.sh
 
 * **Port conflicts**: Stop other containers using conflicting ports.
 * **Terraform connection errors**: Ensure LocalStack container is running (`docker compose up -d`).
-* **AWS CLI timeouts**: Use `--endpoint-url http://localhost:4566` for all commands.
+* **AWS CLI timeouts**: Use `awslocal` or add `--endpoint-url http://localhost:4566` for all commands.
 * **Reset LocalStack data**: Stop LocalStack and delete the `localstack-data/` folder, then restart.
 * **Docker permissions (Linux)**: Add your user to the `docker` group and re-login.
-* **Lambda invocation errors**: Verify the Telegram token is set correctly in `main.tf`.
-* **Telegram messages not received**: Check that the polling is working via Lambda logs.
+* **Lambda invocation errors**: Verify the Telegram token is set correctly in `terraform.tfvars`.
+* **Telegram messages not received**: Ensure the polling loop is running.
 * **Archive import fails**: Ensure the JSON file has a valid `conversation` array field.
-* **S3 access errors**: Verify the S3 bucket exists with `aws s3 ls --endpoint-url http://localhost:4566`.
+* **S3 access errors**: Verify the S3 bucket exists with `awslocal s3 ls`.
+* **"No module named requests"**: Rebuild the Lambda package with `pip install -r requirements.txt -t ./package`.
 
 - - -
 ## License
