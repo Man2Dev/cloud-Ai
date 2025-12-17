@@ -1,13 +1,36 @@
 ##########################
+# Variables
+##########################
+variable "telegram_token" {
+  description = "Telegram bot token passed as environment variable to Lambda"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "lab_role_arn" {
+  description = "ARN of the pre-existing LabRole in AWS Academy"
+  type        = string
+  default     = ""
+}
+
+##########################
+# Data Source: Get AWS Account ID
+##########################
+data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
+
+##########################
 # S3: chatbot-conversations
 ##########################
 resource "aws_s3_bucket" "chatbot_conversations" {
-  bucket = "chatbot-conversations"
+  bucket = "chatbot-conversations-${data.aws_caller_identity.current.account_id}"
 
   tags = {
     Project = "AI-Chatbot"
     Purpose = "Store archived user conversation transcripts"
-    Env     = "local"
+    Env     = "aws-academy"
   }
 }
 
@@ -18,18 +41,17 @@ resource "aws_dynamodb_table" "chatbot_sessions" {
   name         = "chatbot-sessions"
   billing_mode = "PAY_PER_REQUEST"
 
-  # Primary key schema: pk (user partition) + sk (model+session sort)
   hash_key  = "pk"
   range_key = "sk"
 
   attribute {
     name = "pk"
-    type = "N"  # Telegram user ID
+    type = "N"
   }
 
   attribute {
     name = "sk"
-    type = "S"  # Composite: SESSION#<id>, PROFILE, or MESSAGE#<id>
+    type = "S"
   }
 
   attribute {
@@ -52,7 +74,6 @@ resource "aws_dynamodb_table" "chatbot_sessions" {
     type = "N"
   }
 
-  # GSI for querying by model across all users
   global_secondary_index {
     name            = "model_index"
     hash_key        = "model_name"
@@ -60,7 +81,6 @@ resource "aws_dynamodb_table" "chatbot_sessions" {
     projection_type = "ALL"
   }
 
-  # GSI for querying active sessions across all users
   global_secondary_index {
     name            = "active_sessions_index"
     hash_key        = "is_active"
@@ -68,7 +88,6 @@ resource "aws_dynamodb_table" "chatbot_sessions" {
     projection_type = "ALL"
   }
 
-  # TTL for automatic cleanup
   ttl {
     attribute_name = "ttl"
     enabled        = true
@@ -77,80 +96,117 @@ resource "aws_dynamodb_table" "chatbot_sessions" {
   tags = {
     Project = "AI-Chatbot"
     Purpose = "Store user sessions and conversation data"
-    Env     = "local"
+    Env     = "aws-academy"
   }
 }
-# -----------------------
-# Lambda packaging + function
-# -----------------------
 
-variable "telegram_token" {
-  description = "Telegram bot token passed as environment variable to Lambda"
-  type        = string
-  default     = ""  # Set via CLI or tfvars for testing
-  sensitive   = true
-}
-
-# Use pre-built zip (from build_lambda.sh) instead of source_file
+##########################
+# Lambda packaging
+##########################
 data "archive_file" "lambda_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/package"  # Assumes build_lambda.sh ran
+  source_dir  = "${path.module}/package"
   output_path = "${path.module}/lambda_function.zip"
-  excludes    = []  # Zip everything in package/
+  excludes    = []
 }
 
-resource "aws_iam_role" "lambda_exec" {
-  name = "lambda_exec_role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action    = "sts:AssumeRole"
-      Effect    = "Allow"
-      Principal = { Service = "lambda.amazonaws.com" }
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "lambda_policy" {
-  name = "lambda_policy"
-  role = aws_iam_role.lambda_exec.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:*",
-          "s3:*"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-}
-
+##########################
+# Lambda Function (using LabRole)
+##########################
 resource "aws_lambda_function" "telegram_bot" {
   function_name    = "telegram-bot"
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
-  handler          = "handler.lambda_handler"  # Expects handler.py in zip root
+  handler          = "handler.lambda_handler"
   runtime          = "python3.9"
-  role             = aws_iam_role.lambda_exec.arn
+  timeout          = 30
+  memory_size      = 256
+  
+  # Use the pre-existing LabRole from AWS Academy
+  role = var.lab_role_arn
 
   environment {
     variables = {
       TELEGRAM_TOKEN = var.telegram_token
+      S3_BUCKET_NAME = aws_s3_bucket.chatbot_conversations.bucket
     }
   }
+
+  depends_on = [
+    aws_s3_bucket.chatbot_conversations,
+    aws_dynamodb_table.chatbot_sessions
+  ]
+}
+
+##########################
+# API Gateway (REST API)
+##########################
+resource "aws_api_gateway_rest_api" "telegram_api" {
+  name        = "telegram-bot-api"
+  description = "API Gateway for Telegram Bot webhook"
+
+  endpoint_configuration {
+    types = ["REGIONAL"]
+  }
+
+  tags = {
+    Project = "AI-Chatbot"
+    Env     = "aws-academy"
+  }
+}
+
+resource "aws_api_gateway_resource" "webhook" {
+  rest_api_id = aws_api_gateway_rest_api.telegram_api.id
+  parent_id   = aws_api_gateway_rest_api.telegram_api.root_resource_id
+  path_part   = "webhook"
+}
+
+resource "aws_api_gateway_method" "webhook_post" {
+  rest_api_id   = aws_api_gateway_rest_api.telegram_api.id
+  resource_id   = aws_api_gateway_resource.webhook.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "lambda_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.telegram_api.id
+  resource_id             = aws_api_gateway_resource.webhook.id
+  http_method             = aws_api_gateway_method.webhook_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.telegram_bot.invoke_arn
+}
+
+resource "aws_api_gateway_deployment" "telegram_deployment" {
+  depends_on = [
+    aws_api_gateway_integration.lambda_integration
+  ]
+
+  rest_api_id = aws_api_gateway_rest_api.telegram_api.id
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_api_gateway_stage" "prod" {
+  deployment_id = aws_api_gateway_deployment.telegram_deployment.id
+  rest_api_id   = aws_api_gateway_rest_api.telegram_api.id
+  stage_name    = "prod"
+
+  tags = {
+    Project = "AI-Chatbot"
+    Env     = "aws-academy"
+  }
+}
+
+##########################
+# Lambda Permission for API Gateway
+##########################
+resource "aws_lambda_permission" "api_gateway" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.telegram_bot.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.telegram_api.execution_arn}/*/*"
 }
