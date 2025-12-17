@@ -1,0 +1,10 @@
+# AWS Academy Migration Configuration
+# Copy this file to terraform.tfvars and fill in your values
+
+# Your Telegram bot token
+telegram_token = "YOUR_TELEGRAM_BOT_TOKEN"
+
+# The LabRole ARN from AWS Academy
+# Find this in AWS Academy -> AWS Details -> AWS CLI section
+# Format: arn:aws:iam::ACCOUNT_ID:role/LabRole
+lab_role_arn = "arn:aws:iam::YOUR_ACCOUNT_ID:role/LabRole"
