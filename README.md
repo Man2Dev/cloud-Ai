@@ -269,17 +269,26 @@ If the bot stops responding after redeployment:
 ```
 .
 ├── provider.tf                 # AWS provider configuration
-├── main.tf                     # Infrastructure resources (S3, DynamoDB, Lambda, API Gateway)
-├── outputs.tf                  # Terraform outputs (URLs, resource names)
-├── terraform.tfvars.example    # Example configuration file
+├── variables.tf                # Variable definitions with validation
+├── locals.tf                   # Local values for naming/tags
+├── main.tf                     # Infrastructure resources
+├── outputs.tf                  # Terraform outputs
+├── terraform.tfvars.example    # Example configuration
 ├── terraform.tfvars            # Your configuration (gitignored)
 ├── requirements.txt            # Python dependencies
 ├── handler.py                  # Lambda function code
 ├── package/                    # Lambda deployment package (generated)
-├── lambda_function.zip         # Zipped Lambda package (generated)
 ├── scripts/
-│   ├── setup-webhook.sh        # Automated Telegram webhook setup
-│   └── view-data.sh            # View S3 and DynamoDB contents
+│   ├── setup-webhook.sh        # Telegram webhook setup
+│   └── view-data.sh            # View S3/DynamoDB contents
+├── docs/
+│   ├── GAP_ANALYSIS.md         # Best practices analysis
+│   └── DEMO_CHEATSHEET.md      # Demo commands reference
+├── .github/workflows/
+│   ├── terraform-validate.yml  # CI: Terraform validation
+│   ├── pr-check.yml            # CI: PR validation
+│   └── deploy.yml              # CD: AWS deployment
+├── CONTRIBUTING.md             # Branch strategy & guidelines
 ├── .gitignore                  # Git ignore rules
 ├── LICENSE                     # GPL v3 License
 └── README.md                   # This documentation

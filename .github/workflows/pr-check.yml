@@ -1,0 +1,37 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches: [main, master]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  check:
+    name: PR Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check branch name
+        run: |
+          BRANCH_NAME="${{ github.head_ref }}"
+          if [[ ! "$BRANCH_NAME" =~ ^(dev|feature/|bugfix/|hotfix/) ]]; then
+            echo "::warning::Branch name should follow convention: dev, feature/*, bugfix/*, or hotfix/*"
+          fi
+
+      - name: Check for terraform.tfvars in PR
+        run: |
+          if git diff --name-only origin/${{ github.base_ref }}...${{ github.head_ref }} | grep -q "terraform.tfvars$"; then
+            echo "::error::terraform.tfvars should not be committed! Add it to .gitignore"
+            exit 1
+          fi
+
+      - name: Check for sensitive data
+        run: |
+          # Check for potential secrets in files
+          if grep -rE "(aws_access_key_id|aws_secret_access_key|AKIA[0-9A-Z]{16})" --include="*.tf" --include="*.py" --include="*.sh" .; then
+            echo "::error::Potential sensitive data found in files!"
+            exit 1
+          fi
